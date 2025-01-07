@@ -7,11 +7,9 @@ import os
 import time
 import requests
 
-# Load environment variables
 load_dotenv()
 print("Environment variables loaded")
 
-# Configure Web3 and Telegram from environment variables
 RPC_URL = os.getenv('RPC_URL')
 PRIVATE_KEY = os.getenv('PRIVATE_KEY')
 CONTRACT_ADDRESS = os.getenv('CONTRACT_ADDRESS')
@@ -28,7 +26,6 @@ print(f"Telegram Chat ID loaded: {'Yes' if TELEGRAM_CHAT_ID else 'No'}")
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 print(f"\nWeb3 Connection Status: {'Connected' if w3.is_connected() else 'Not Connected'}")
 
-# ABI remains the same
 ABI = [
     {
         "inputs": [{"internalType": "address", "name": "to", "type": "address"}],
@@ -47,7 +44,6 @@ ABI = [
 ]
 
 def send_telegram_message(message):
-    """Send message to Telegram."""
     try:
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
             print("Telegram credentials not configured")
@@ -66,7 +62,6 @@ def send_telegram_message(message):
         print(f"Error sending Telegram message: {str(e)}")
 
 def convert_to_checksum_address(address):
-    """Convert address to checksum format."""
     try:
         return Web3.to_checksum_address(address.lower())
     except Exception as e:
@@ -74,7 +69,6 @@ def convert_to_checksum_address(address):
         return None
 
 def load_qualified_addresses(csv_file):
-    """Load addresses with points >= 35 from CSV file."""
     try:
         print(f"\nAttempting to read CSV file: {csv_file}")
         
@@ -100,23 +94,30 @@ def load_qualified_addresses(csv_file):
         return []
 
 def check_balance_and_mint(contract, address, account, nonce, successful_count, failed_count, total_count):
-    """Check balance and mint if balance is 0."""
     try:
-        # Check balance
         balance = contract.functions.balanceOf(address).call()
         print(f"Current balance for {address}: {balance}")
         
-        if balance > 0:
-            print(f"⏭️ Skipping address {address} - already has token")
+        if balance >0:
+            print(f"✅ Success - Address {address} has 1 token")
             send_telegram_message(
-                f"⏭️ Skipping mint - Already has token\n"
+                f"✅ Success - Has 1 token\n"
+                f"Address: {address}\n"
+                f"Progress: {successful_count + 1}/{total_count} successful\n"
+                f"Failed: {failed_count}"
+            )
+            return "already_has_token", nonce
+        
+        if balance > 1:
+            print(f"⏭️ Skipping address {address} - has multiple tokens")
+            send_telegram_message(
+                f"⏭️ Skipping mint - Has multiple tokens\n"
                 f"Address: {address}\n"
                 f"Progress: {successful_count}/{total_count} successful\n"
                 f"Failed: {failed_count}"
             )
             return None, nonce
-        
-        # Build transaction
+
         print("Building transaction...")
         transaction = contract.functions.safeMint(address).build_transaction({
             'from': account.address,
@@ -125,7 +126,6 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
             'nonce': nonce
         })
         
-        # Sign and send transaction
         print("Signing transaction...")
         signed_txn = w3.eth.account.sign_transaction(transaction, PRIVATE_KEY)
         
@@ -133,7 +133,6 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
         tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
         print(f"Transaction hash: {tx_hash.hex()}")
         
-        # Wait for receipt
         print("Waiting for transaction receipt...")
         tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
         
@@ -169,7 +168,6 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
         return None, nonce
 
 def mint_nfts(addresses):
-    """Mint NFTs for qualified addresses."""
     if not PRIVATE_KEY or not CONTRACT_ADDRESS:
         print("❌ Missing required environment variables")
         return [], []
@@ -177,14 +175,10 @@ def mint_nfts(addresses):
     print("\nInitializing minting process...")
     send_telegram_message("🚀 Starting NFT minting process...")
     
-    # Set up contract
     contract = w3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=ABI)
-    
-    # Set up account
     account = Account.from_key(PRIVATE_KEY)
     print(f"Minting from address: {account.address}")
     
-    # Get nonce
     nonce = w3.eth.get_transaction_count(account.address)
     print(f"Starting nonce: {nonce}")
     
@@ -195,8 +189,7 @@ def mint_nfts(addresses):
     for i, address in enumerate(addresses, 1):
         print(f"\nProcessing address {i}/{total_addresses}: {address}")
         
-        # Check balance and mint
-        tx_hash, new_nonce = check_balance_and_mint(
+        result, new_nonce = check_balance_and_mint(
             contract, 
             address, 
             account, 
@@ -206,21 +199,25 @@ def mint_nfts(addresses):
             total_addresses
         )
         
-        if tx_hash:
+        if result == "already_has_token":
             successful_mints.append({
                 'address': address,
-                'transaction_hash': tx_hash
+                'transaction_hash': 'already_has_token'
+            })
+        elif result:
+            successful_mints.append({
+                'address': address,
+                'transaction_hash': result
             })
             nonce = new_nonce
         else:
-            if new_nonce > nonce:  # Transaction failed but was attempted
+            if new_nonce > nonce:
                 failed_mints.append({
                     'address': address,
                     'error': 'Transaction failed'
                 })
                 nonce = new_nonce
         
-        # Wait between transactions
         if i < total_addresses:
             print("Waiting 5 seconds before next transaction...")
             time.sleep(5)
@@ -241,7 +238,6 @@ def main():
     try:
         successful_mints, failed_mints = mint_nfts(qualified_addresses)
         
-        # Print and send summary
         summary = (
             f"\n=== Minting Summary ===\n"
             f"Total addresses processed: {len(qualified_addresses)}\n"
