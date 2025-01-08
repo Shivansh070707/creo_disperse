@@ -1,7 +1,6 @@
 from web3 import Web3
 import pandas as pd
 from eth_account import Account
-import json
 from dotenv import load_dotenv
 import os
 import time
@@ -63,7 +62,7 @@ def send_telegram_message(message):
 
 def convert_to_checksum_address(address):
     try:
-        return Web3.to_checksum_address(address.lower())
+        return Web3.to_checksum_address(address.strip().lower())
     except Exception as e:
         print(f"Error converting address {address}: {str(e)}")
         return None
@@ -98,7 +97,7 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
         balance = contract.functions.balanceOf(address).call()
         print(f"Current balance for {address}: {balance}")
         
-        if balance >0:
+        if balance > 0:
             print(f"✅ Success - Address {address} has 1 token")
             send_telegram_message(
                 f"✅ Success - Has 1 token\n"
@@ -118,43 +117,66 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
             )
             return None, nonce
 
-        print("Building transaction...")
-        transaction = contract.functions.safeMint(address).build_transaction({
-            'from': account.address,
-            'gas': 300000,
-            'gasPrice': w3.eth.gas_price,
-            'nonce': nonce
-        })
-        
-        print("Signing transaction...")
-        signed_txn = w3.eth.account.sign_transaction(transaction, PRIVATE_KEY)
-        
-        print("Sending transaction...")
-        tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
-        print(f"Transaction hash: {tx_hash.hex()}")
-        
-        print("Waiting for transaction receipt...")
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-        
-        if tx_receipt['status'] == 1:
-            print("✅ Mint successful!")
-            send_telegram_message(
-                f"✅ Mint Successful!\n"
-                f"Address: {address}\n"
-                f"TX Hash: {tx_hash.hex()}\n"
-                f"Progress: {successful_count + 1}/{total_count} successful\n"
-                f"Failed: {failed_count}"
-            )
-            return tx_hash.hex(), nonce + 1
-        else:
-            print("❌ Transaction failed!")
-            send_telegram_message(
-                f"❌ Mint Failed!\n"
-                f"Address: {address}\n"
-                f"Progress: {successful_count}/{total_count} successful\n"
-                f"Failed: {failed_count + 1}"
-            )
-            return None, nonce + 1
+        try:
+            # Estimate gas for the transaction
+            gas_estimate = contract.functions.safeMint(address).estimate_gas({
+                'from': account.address,
+                'nonce': nonce
+            })
+            print(f"Estimated gas: {gas_estimate}")
+            
+            # Add 20% buffer to gas estimate
+            gas_limit = int(gas_estimate * 1.2)
+            
+            # Get current gas price and add 10% for faster confirmation
+            gas_price = int(w3.eth.gas_price * 1.1)
+
+            print("Building transaction...")
+            transaction = contract.functions.safeMint(address).build_transaction({
+                'from': account.address,
+                'gas': gas_limit,
+                'gasPrice': gas_price,
+                'nonce': nonce,
+                'chainId': w3.eth.chain_id
+            })
+            
+            print("Signing transaction...")
+            signed_txn = w3.eth.account.sign_transaction(transaction, PRIVATE_KEY)
+            
+            print("Sending transaction...")
+            tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+            print(f"Transaction hash: {tx_hash.hex()}")
+            
+            print("Waiting for transaction receipt...")
+            tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)  # 2 minute timeout
+            
+            if tx_receipt['status'] == 1:
+                print("✅ Mint successful!")
+                send_telegram_message(
+                    f"✅ Mint Successful!\n"
+                    f"Address: {address}\n"
+                    f"TX Hash: {tx_hash.hex()}\n"
+                    f"Progress: {successful_count + 1}/{total_count} successful\n"
+                    f"Failed: {failed_count}"
+                )
+                return tx_hash.hex(), nonce + 1
+            else:
+                print("❌ Transaction failed!")
+                send_telegram_message(
+                    f"❌ Mint Failed!\n"
+                    f"Address: {address}\n"
+                    f"Progress: {successful_count}/{total_count} successful\n"
+                    f"Failed: {failed_count + 1}"
+                )
+                return None, nonce + 1
+
+        except Exception as tx_error:
+            print(f"Transaction error: {str(tx_error)}")
+            if "nonce too low" in str(tx_error).lower():
+                nonce = w3.eth.get_transaction_count(account.address)
+                print(f"Nonce too low, updated to: {nonce}")
+                return None, nonce
+            raise tx_error
             
     except Exception as e:
         print(f"❌ Error during minting: {str(e)}")
@@ -165,6 +187,8 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
             f"Progress: {successful_count}/{total_count} successful\n"
             f"Failed: {failed_count + 1}"
         )
+        if "nonce too low" in str(e).lower() or "already known" in str(e).lower():
+            return None, nonce + 1
         return None, nonce
 
 def mint_nfts(addresses):
@@ -219,8 +243,8 @@ def mint_nfts(addresses):
                 nonce = new_nonce
         
         if i < total_addresses:
-            print("Waiting 5 seconds before next transaction...")
-            time.sleep(5)
+            print("Waiting 1 seconds before next transaction...")
+            time.sleep(1)
     
     return successful_mints, failed_mints
 
