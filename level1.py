@@ -11,13 +11,13 @@ print("Environment variables loaded")
 
 RPC_URL = os.getenv('RPC_URL')
 PRIVATE_KEY = os.getenv('PRIVATE_KEY')
-CONTRACT_ADDRESS = "0xEF84b438886745497812563b9114fD0DD04DD4DE"
+CONTRACT_ADDRESS = os.getenv('CONTRACT_ADDRESS')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 print(f"\nConfiguration:")
 print(f"RPC URL: {RPC_URL[:10]}..." if RPC_URL else "RPC URL not found!")
-print(f"Contract Address: {CONTRACT_ADDRESS}")
+print(f"Contract Address: {CONTRACT_ADDRESS}" if CONTRACT_ADDRESS else "Contract Address not found!")
 print(f"Private Key loaded: {'Yes' if PRIVATE_KEY else 'No'}")
 print(f"Telegram Bot Token loaded: {'Yes' if TELEGRAM_BOT_TOKEN else 'No'}")
 print(f"Telegram Chat ID loaded: {'Yes' if TELEGRAM_CHAT_ID else 'No'}")
@@ -67,7 +67,7 @@ def convert_to_checksum_address(address):
         print(f"Error converting address {address}: {str(e)}")
         return None
 
-def load_addresses(csv_file):
+def load_qualified_addresses(csv_file):
     try:
         print(f"\nAttempting to read CSV file: {csv_file}")
         
@@ -75,15 +75,18 @@ def load_addresses(csv_file):
         print(f"Successfully read CSV file")
         print(f"Total rows in CSV: {len(df)}")
         
-        # Assuming the first column contains wallet addresses
-        addresses = [
-            convert_to_checksum_address(addr) 
-            for addr in df.iloc[:, 0].tolist()
-        ]
-        addresses = [addr for addr in addresses if addr is not None]
+        points_column = df.columns[1]
+        wallet_column = df.columns[0]
         
-        print(f"\nValid addresses loaded: {len(addresses)}")
-        return addresses
+        qualified_df = df[df[points_column] >= 35]
+        qualified_addresses = [
+            convert_to_checksum_address(addr) 
+            for addr in qualified_df[wallet_column].tolist()
+        ]
+        qualified_addresses = [addr for addr in qualified_addresses if addr is not None]
+        
+        print(f"\nQualified addresses (points >= 35): {len(qualified_addresses)}")
+        return qualified_addresses
     except Exception as e:
         print(f"\n❌ Error reading CSV: {str(e)}")
         print(f"Error type: {type(e).__name__}")
@@ -115,13 +118,17 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
             return None, nonce
 
         try:
+            # Estimate gas for the transaction
             gas_estimate = contract.functions.safeMint(address).estimate_gas({
                 'from': account.address,
                 'nonce': nonce
             })
             print(f"Estimated gas: {gas_estimate}")
             
+            # Add 20% buffer to gas estimate
             gas_limit = int(gas_estimate * 1.2)
+            
+            # Get current gas price and add 10% for faster confirmation
             gas_price = int(w3.eth.gas_price * 1.1)
 
             print("Building transaction...")
@@ -141,7 +148,7 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
             print(f"Transaction hash: {tx_hash.hex()}")
             
             print("Waiting for transaction receipt...")
-            tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)  # 2 minute timeout
             
             if tx_receipt['status'] == 1:
                 print("✅ Mint successful!")
@@ -185,8 +192,8 @@ def check_balance_and_mint(contract, address, account, nonce, successful_count, 
         return None, nonce
 
 def mint_nfts(addresses):
-    if not PRIVATE_KEY:
-        print("❌ Missing private key environment variable")
+    if not PRIVATE_KEY or not CONTRACT_ADDRESS:
+        print("❌ Missing required environment variables")
         return [], []
     
     print("\nInitializing minting process...")
@@ -236,7 +243,7 @@ def mint_nfts(addresses):
                 nonce = new_nonce
         
         if i < total_addresses:
-            print("Waiting 1 second before next transaction...")
+            print("Waiting 1 seconds before next transaction...")
             time.sleep(1)
     
     return successful_mints, failed_mints
@@ -244,20 +251,20 @@ def mint_nfts(addresses):
 def main():
     print("\n=== Starting NFT Minting Script ===\n")
     
-    addresses = load_addresses('csv_data/level2.csv')
-    print(f"\nTotal addresses loaded: {len(addresses)}")
+    qualified_addresses = load_qualified_addresses('addresses.csv')
+    print(f"\nTotal qualified addresses found: {len(qualified_addresses)}")
     
-    if not addresses:
-        print("❌ No addresses found or error reading CSV")
-        send_telegram_message("❌ No addresses found or error reading CSV")
+    if not qualified_addresses:
+        print("❌ No qualified addresses found or error reading CSV")
+        send_telegram_message("❌ No qualified addresses found or error reading CSV")
         return
     
     try:
-        successful_mints, failed_mints = mint_nfts(addresses)
+        successful_mints, failed_mints = mint_nfts(qualified_addresses)
         
         summary = (
             f"\n=== Minting Summary ===\n"
-            f"Total addresses processed: {len(addresses)}\n"
+            f"Total addresses processed: {len(qualified_addresses)}\n"
             f"Successful mints: {len(successful_mints)}\n"
             f"Failed mints: {len(failed_mints)}"
         )
